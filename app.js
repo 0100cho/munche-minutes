@@ -158,7 +158,7 @@ function updateMeetingChrome() {
   } else {
     els.video.hidden = true;
   }
-  document.title = m ? `${m.collecting ? '● ' : ''}문체위 속기 · ${m.subject}` : '문체위 실시간 속기';
+  document.title = `${m?.collecting ? '● ' : ''}문체위 실시간 속기 - 한국관광공사 상황반`;
 }
 
 async function selectMeeting(xcgcd) {
