@@ -417,7 +417,7 @@ function makeSpeakerHeader(n, label) {
   const h = document.createElement('div');
   h.className = 'spk';
   h.dataset.n = n;
-  h.innerHTML = `<span>◯ ${esc(label)}</span><button class="edit" data-act="edit" title="화자 바꾸기">변경</button><button class="del" data-act="del" title="여기서 화자 지정 해제">해제</button>`;
+  h.innerHTML = `<button class="spk-name" data-act="sum" title="클릭하면 질의·답변 요지 요약">◯ ${esc(label)}</button><button class="edit" data-act="edit" title="화자 바꾸기">변경</button><button class="del" data-act="del" title="여기서 화자 지정 해제">해제</button>`;
   return h;
 }
 
@@ -612,6 +612,7 @@ els.transcript.addEventListener('click', (e) => {
     const n = Number(hdr.dataset.n);
     if (act === 'edit') openPopover(n, e.target);
     if (act === 'del') setSpeaker(n, null);
+    if (act === 'sum') openSummary(n, e.target);
     return;
   }
   if (!lineEl) return;
@@ -760,6 +761,7 @@ document.addEventListener('keydown', (e) => {
   if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); els.search.focus(); els.search.select(); return; }
   if (e.key === 'Escape') {
+    if (!els.sum.hidden) { closeSummary(); return; }
     closePopover(); state.selected.clear(); paintSelection(); return;
   }
   if (state.active == null) return;
@@ -790,6 +792,235 @@ function showJumpNew() {
 els.jumpNew.onclick = scrollToBottom;
 window.addEventListener('scroll', () => { if (nearBottom()) { state.unseen = 0; els.jumpNew.hidden = true; } }, { passive: true });
 els.follow.onchange = () => { if (els.follow.checked && state.current?.collecting) scrollToBottom(); };
+
+/* ---------- AI summary (질의·답변 요지) ---------- */
+// Pinned SDK build served as an ES module; loaded only when a summary is first requested.
+const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.129.0/+esm';
+const SUM_MODEL = 'claude-opus-5-5';
+const SUM_MAX_CHARS = 60000;
+const SUM_SCHEMA = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', description: '질문 요지 (100자 내외)' },
+    answer: { type: 'string', description: '답변 요지 (100자 내외). 답변이 없으면 "답변 없음"' },
+    answerer: { type: 'string', description: '주로 답변한 사람의 기관·직위(이름이 나오면 함께). 알 수 없으면 빈 문자열' },
+  },
+  required: ['question', 'answer', 'answerer'],
+  additionalProperties: false,
+};
+const SUM_SYSTEM = [
+  '국회 상임위원회 회의의 실시간 AI 자막(속기)에서 한 위원의 질의 구간을 받아, 상황 보고용으로 질문 요지와 답변 요지를 정리한다.',
+  '- 질문 요지: 질의자가 무엇을 지적·요구·질문했는지 100자 내외.',
+  '- 답변 요지: 답변자가 무엇이라고 답했는지(인정, 해명, 약속, 검토 등) 100자 내외. 답변이 없으면 "답변 없음".',
+  '- 개조식 명사형으로 끝맺는다(예: "~지적", "~요구", "~검토하겠다고 답변").',
+  '- 원문에 없는 내용을 덧붙이지 않는다. 숫자·기관명·사업명은 원문 그대로 쓴다.',
+  '- 자막은 음성 인식 결과라 오탈자가 있다. 문맥상 명백한 경우에만 바로잡는다.',
+  '- 화자 표시는 사용자가 지정한 것이며, 답변자의 말이 질의자 이름 아래 섞여 있을 수 있다. 문맥으로 질문과 답변을 구분한다.',
+].join('\n');
+
+Object.assign(els, {
+  sum: $('summary'), sumHead: $('sumHead'), sumTitle: $('sumTitle'), sumMeta: $('sumMeta'),
+  sumClose: $('sumClose'), sumBody: $('sumBody'), sumCopy: $('sumCopy'), sumRetry: $('sumRetry'), sumKey: $('sumKey'),
+});
+
+let sdkPromise = null;
+let sumReq = 0;
+let sumCtx = null;
+
+function loadSdk() {
+  sdkPromise ||= import(SDK_URL).catch((e) => { sdkPromise = null; throw e; });
+  return sdkPromise;
+}
+
+const getApiKey = () => load('munche.apiKey', '');
+// Lawmakers only: "○○○ 위원", "위원장 ○○○", "간사 ○○○". Agency heads such as
+// "게임물관리위원장" or "영화진흥위원회 위원장" count as answerers.
+const isQuestioner = (label) => /^(위원장|간사)(\s|$)|\s(위원|간사)$/.test(label || '');
+
+// The 질의 block a speaker header starts: runs until the next speaker change to a
+// different 위원/위원장, so answers from 장관·기관장 stay inside the block.
+function summaryRange(n) {
+  const segs = state.segs;
+  const start = segs.findIndex((s) => s.n === n);
+  if (start < 0) return null;
+  const eff = effectiveSpeakers();
+  const label = eff[start];
+  let end = segs.length - 1;
+  for (let j = start + 1; j < segs.length; j++) {
+    const a = state.assign[segs[j].n];
+    if (a === undefined || a === label) continue;
+    if (!isQuestioner(label) || isQuestioner(a)) { end = j - 1; break; }
+  }
+  return { start, end, label, eff };
+}
+
+function summaryText({ start, end, eff }) {
+  const out = [];
+  let cur;
+  for (let i = start; i <= end; i++) {
+    const s = state.segs[i];
+    if (i === start || eff[i] !== cur) {
+      cur = eff[i];
+      out.push(`\n[${hms(s.at)}] ${cur || '화자 미지정'}:`);
+    }
+    out.push(s.t);
+  }
+  return out.join(' ').replace(/ \n/g, '\n').trim();
+}
+
+function openSummary(n, anchorEl) {
+  const r = summaryRange(n);
+  if (!r) return;
+  const first = state.segs[r.start];
+  const last = state.segs[r.end];
+  sumCtx = {
+    xcgcd: state.current.xcgcd, label: r.label || '화자 미지정',
+    startN: first.n, endN: last.n, t1: hms(first.at), t2: hms(last.at),
+    lines: r.end - r.start + 1,
+    open: !!state.current.collecting && r.end === state.segs.length - 1,
+    text: summaryText(r),
+    result: null,
+  };
+  els.sumTitle.textContent = `◯ ${sumCtx.label}`;
+  els.sumMeta.textContent = `${sumCtx.t1}–${sumCtx.t2} · ${sumCtx.lines}줄`;
+  placeSummary(anchorEl);
+
+  const cached = load(summaryKey(), null);
+  if (cached) renderSummary(cached);
+  else if (!getApiKey()) renderKeyForm();
+  else runSummary();
+}
+
+const summaryKey = () => `munche.sum.${sumCtx.xcgcd}.${sumCtx.startN}-${sumCtx.endN}`;
+
+function placeSummary(anchorEl) {
+  els.sum.hidden = false;
+  if (els.sum.dataset.moved) return; // keep where the user dragged it
+  const r = anchorEl.getBoundingClientRect();
+  const w = els.sum.offsetWidth;
+  els.sum.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 16))}px`;
+  els.sum.style.top = `${Math.max(8, Math.min(r.bottom + 8, innerHeight - els.sum.offsetHeight - 16))}px`;
+}
+
+function closeSummary() { els.sum.hidden = true; sumReq++; }
+
+function setSumBusy(busy) {
+  els.sumRetry.disabled = busy || !sumCtx;
+  els.sumCopy.disabled = busy || !sumCtx?.result;
+}
+
+async function runSummary() {
+  const apiKey = getApiKey();
+  if (!apiKey) return renderKeyForm();
+  const ctx = sumCtx;
+  const req = ++sumReq;
+  if (ctx.text.length > SUM_MAX_CHARS) {
+    els.sumBody.innerHTML = `<p class="sum-err">이 구간이 너무 깁니다(${ctx.text.length.toLocaleString()}자). 다음 위원의 화자 지정이 빠져 있는지 확인해 주세요.</p>`;
+    return;
+  }
+  els.sumBody.innerHTML = '<p class="sum-wait">요약하는 중…</p>';
+  setSumBusy(true);
+  try {
+    const { default: Anthropic } = await loadSdk();
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    try {
+      const res = await client.beta.messages.create({
+        model: SUM_MODEL,
+        max_tokens: 4000,
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        output_config: { effort: 'low', format: { type: 'json_schema', schema: SUM_SCHEMA } },
+        system: SUM_SYSTEM,
+        messages: [{
+          role: 'user',
+          content: `회의: ${state.current.subject} (${state.current.conf_date})\n질의자: ${ctx.label}\n\n<속기>\n${ctx.text}\n</속기>`,
+        }],
+      });
+      if (req !== sumReq) return;
+      if (res.stop_reason === 'refusal') throw new Error('AI가 이 구간의 요약을 거절했습니다.');
+      if (res.stop_reason === 'max_tokens') throw new Error('요약이 중간에 끊겼습니다. 다시 시도해 주세요.');
+      const block = res.content.find((b) => b.type === 'text');
+      const data = JSON.parse(block.text);
+      const result = { ...data, at: new Date().toISOString() };
+      if (!ctx.open) store(summaryKey(), result); // an unfinished live block will change; don't cache it
+      renderSummary(result);
+    } catch (e) {
+      if (e instanceof Anthropic.AuthenticationError) throw new Error('API 키가 올바르지 않습니다. [API 키]에서 다시 입력해 주세요.');
+      if (e instanceof Anthropic.RateLimitError) throw new Error('요청이 많아 잠시 제한됐습니다. 잠시 후 다시 시도해 주세요.');
+      if (e instanceof Anthropic.APIConnectionError) throw new Error('AI 서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.');
+      if (e instanceof Anthropic.APIError) throw new Error(`AI 요청 오류 (${e.status ?? '?'}): ${e.message}`);
+      throw e;
+    }
+  } catch (e) {
+    if (req !== sumReq) return;
+    els.sumBody.innerHTML = `<p class="sum-err">${esc(e.message || '요약에 실패했습니다.')}</p>`;
+  } finally {
+    if (req === sumReq) setSumBusy(false);
+  }
+}
+
+function renderSummary(result) {
+  sumCtx.result = result;
+  els.sumBody.innerHTML =
+    `<section><h4>질문 요지</h4><p>${esc(result.question)}</p></section>` +
+    `<section><h4>답변 요지${result.answerer ? ` <span>· ${esc(result.answerer)}</span>` : ''}</h4><p>${esc(result.answer)}</p></section>` +
+    `<p class="sum-note">AI 요약 · ${esc(hms(result.at))} 생성${sumCtx.open ? ' · 진행 중인 질의라 이후 발언은 빠져 있음' : ''} · 인용 전 원문 확인</p>`;
+  setSumBusy(false);
+}
+
+function renderKeyForm() {
+  els.sumBody.innerHTML = `
+    <form class="sum-keyform">
+      <p>요약에는 Anthropic API 키가 필요합니다. 키는 이 브라우저에만 저장되고 Anthropic API로만 전송됩니다.</p>
+      <input type="password" placeholder="sk-ant-..." autocomplete="off" value="${esc(getApiKey())}" />
+      <div class="row"><button class="btn primary small" type="submit">저장하고 요약</button>${getApiKey() ? '<button class="btn small" type="button" data-act="forget">키 삭제</button>' : ''}</div>
+    </form>`;
+  const form = els.sumBody.querySelector('form');
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const v = form.querySelector('input').value.trim();
+    if (!v) return;
+    store('munche.apiKey', v);
+    if (sumCtx) runSummary();
+  };
+  form.querySelector('[data-act=forget]')?.addEventListener('click', () => {
+    try { localStorage.removeItem('munche.apiKey'); } catch { /* storage unavailable */ }
+    toast('API 키를 삭제했습니다');
+    renderKeyForm();
+  });
+  setSumBusy(false);
+  form.querySelector('input').focus();
+}
+
+els.sumClose.onclick = closeSummary;
+els.sumRetry.onclick = () => { if (sumCtx) runSummary(); };
+els.sumKey.onclick = renderKeyForm;
+els.sumCopy.onclick = () => {
+  const r = sumCtx?.result;
+  if (!r) return;
+  copyText(
+    `◯${sumCtx.label} 질의 (${sumCtx.t1}~${sumCtx.t2})\n` +
+    `· 질문 요지: ${r.question}\n` +
+    `· 답변 요지${r.answerer ? `(${r.answerer})` : ''}: ${r.answer}`,
+    '요약을 복사했습니다',
+  );
+};
+
+// Drag the panel by its header.
+els.sumHead.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('button')) return;
+  const box = els.sum.getBoundingClientRect();
+  const dx = e.clientX - box.left; const dy = e.clientY - box.top;
+  els.sumHead.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    els.sum.style.left = `${Math.max(0, Math.min(ev.clientX - dx, innerWidth - box.width))}px`;
+    els.sum.style.top = `${Math.max(0, Math.min(ev.clientY - dy, innerHeight - 40))}px`;
+    els.sum.dataset.moved = '1';
+  };
+  const up = () => { els.sumHead.removeEventListener('pointermove', move); els.sumHead.removeEventListener('pointerup', up); };
+  els.sumHead.addEventListener('pointermove', move);
+  els.sumHead.addEventListener('pointerup', up);
+});
 
 /* ---------- misc wiring ---------- */
 els.select.onchange = () => selectMeeting(els.select.value);
