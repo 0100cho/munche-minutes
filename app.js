@@ -948,6 +948,9 @@ async function runSummary() {
       if (e instanceof Anthropic.AuthenticationError) throw new Error('API 키가 올바르지 않습니다. [API 키]에서 다시 입력해 주세요.');
       if (e instanceof Anthropic.RateLimitError) throw new Error('요청이 많아 잠시 제한됐습니다. 잠시 후 다시 시도해 주세요.');
       if (e instanceof Anthropic.APIConnectionError) throw new Error('AI 서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.');
+      if (e instanceof Anthropic.APIError && /credit balance/i.test(e.message)) {
+        throw new Error('API 크레딧 잔액이 없습니다. console.anthropic.com → Plans & Billing에서 크레딧을 충전한 뒤 [다시 요약]을 눌러 주세요. (Claude Pro 구독과 API 요금은 별개입니다)');
+      }
       if (e instanceof Anthropic.APIError) throw new Error(`AI 요청 오류 (${e.status ?? '?'}): ${e.message}`);
       throw e;
     }
