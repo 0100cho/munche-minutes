@@ -36,6 +36,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Components below set display (flex etc.), which would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body { min-height: 100vh; }
 body {
