@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>문체위 실시간 속기</title>
+  <meta name="description" content="국회 문화체육관광위원회 실시간 AI 속기 뷰어 — 키워드 검색, 화자 지정, 회의록 양식 복사" />
+  <link rel="stylesheet" href="./style.css?v=3" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>문체위 실시간 속기</h1>
+      <span class="sub">국회 문화체육관광위원회</span>
+    </div>
+    <div class="meeting-picker">
+      <select id="meetingSelect" aria-label="회의 선택"></select>
+      <span id="liveBadge" class="badge" hidden>● 생중계</span>
+      <a id="videoLink" class="btn ghost" target="_blank" rel="noopener" hidden>▶ 중계 보기</a>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <div class="toolbar">
+    <div class="search">
+      <input id="searchInput" type="search" placeholder="키워드 검색 (쉼표로 여러 개: 게임, 콘진원)" autocomplete="off" />
+      <span id="matchInfo" class="match-info"></span>
+      <button id="prevMatch" class="btn icon" title="이전 (Shift+Enter)">↑</button>
+      <button id="nextMatch" class="btn icon" title="다음 (Enter)">↓</button>
+    </div>
+    <label class="toggle"><input id="filterOnly" type="checkbox" /> 일치하는 줄만</label>
+    <label class="toggle"><input id="followLive" type="checkbox" checked /> 실시간 따라가기</label>
+  </div>
+
+  <main class="layout">
+    <section class="transcript-wrap">
+      <div id="status" class="status">회의 목록을 불러오는 중…</div>
+      <div id="transcript" class="transcript" tabindex="0" aria-label="속기 본문"></div>
+      <button id="jumpNew" class="jump-new" hidden>새 발언 ↓</button>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>복사 · 저장</h2>
+        <div class="opt-row">
+          <label><input type="radio" name="fmt" value="minutes" checked /> 회의록 양식</label>
+          <label><input type="radio" name="fmt" value="lines" /> 줄 단위</label>
+        </div>
+        <div class="opt-row">
+          <label><input id="withTime" type="checkbox" /> 시각 포함</label>
+        </div>
+        <div class="btn-grid">
+          <button id="copySel" class="btn primary" disabled>선택 복사</button>
+          <button id="copyMatches" class="btn" disabled>검색 결과 복사</button>
+          <button id="copyAll" class="btn">전체 복사</button>
+          <button id="saveTxt" class="btn">TXT 저장</button>
+        </div>
+        <p class="hint">줄 클릭: 선택 · Shift+클릭: 범위 선택 · Esc: 선택 해제</p>
+      </section>
+
+      <section class="panel">
+        <h2>화자 명부</h2>
+        <form id="rosterForm" class="roster-form">
+          <input id="rosterInput" placeholder="예: 위원 홍길동, 장관 김OO" autocomplete="off" />
+          <button class="btn" type="submit">추가</button>
+        </form>
+        <ol id="roster" class="roster"></ol>
+        <div id="detected" class="detected"></div>
+        <button id="applyAllSuggest" class="btn small" hidden></button>
+        <p class="hint">줄을 클릭한 뒤 숫자키 <kbd>1</kbd>~<kbd>9</kbd>로 그 줄부터 화자 지정 · <kbd>0</kbd> 지정 해제</p>
+      </section>
+
+      <section class="panel">
+        <h2>검색 결과 <span id="resultCount" class="count"></span></h2>
+        <ol id="results" class="results"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <div id="popover" class="popover" hidden>
+    <input id="popInput" placeholder="화자 입력 후 Enter" autocomplete="off" />
+    <div id="popList" class="pop-list"></div>
+    <div class="pop-actions">
+      <button id="popClear" class="btn small">이 줄의 화자 지정 해제</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <footer class="foot">
+    데이터: 국회 인터넷의사중계 AI 자막 (assembly-minutes 공개 API 경유) · AI 속기는 오류가 있을 수 있으니 인용 전 공식 회의록을 확인하세요.
+    화자 지정은 이 브라우저에만 저장됩니다.
+  </footer>
+
+  <script src="./app.js?v=3"></script>
+</body>
+</html>
