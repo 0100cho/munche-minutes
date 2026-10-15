@@ -186,6 +186,18 @@ kbd {
   border: 1px dashed var(--line); background: var(--bg); color: var(--text);
 }
 #applyAllSuggest { margin-top: 8px; }
+.base-roster { margin-top: 10px; font-size: 13px; }
+.base-roster summary { cursor: pointer; color: var(--muted); }
+.base-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; max-height: 40vh; overflow: auto; }
+.base-list .lbl { width: 100%; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.fix-input {
+  display: block; width: 100%; box-sizing: border-box; margin: 8px 0 6px; padding: 6px 8px; resize: vertical;
+  font: inherit; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);
+}
+.fx {
+  font-size: 10px; margin-left: 6px; padding: 0 4px; border-radius: 4px; vertical-align: 1px;
+  color: var(--muted); border: 1px solid var(--line); cursor: help; user-select: none;
+}
 
 .results { list-style: none; padding: 0; margin: 0; max-height: 42vh; overflow: auto; font-size: 13px; }
 .results li { padding: 5px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }

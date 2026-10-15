@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>문체위 실시간 속기 - 한국관광공사 상황반</title>
   <meta name="description" content="국회 문화체육관광위원회 실시간 AI 속기 뷰어 — 키워드 검색, 화자 지정, 회의록 양식 복사" />
-  <link rel="stylesheet" href="./style.css?v=7" />
+  <link rel="stylesheet" href="./style.css?v=8" />
 </head>
 <body>
   <header class="topbar">
@@ -69,6 +69,19 @@
         <div id="detected" class="detected"></div>
         <button id="applyAllSuggest" class="btn small" hidden></button>
         <p class="hint">줄을 클릭한 뒤 숫자키 <kbd>1</kbd>~<kbd>9</kbd>로 그 줄부터 화자 지정 · <kbd>0</kbd> 지정 해제</p>
+        <details id="baseRoster" class="base-roster">
+          <summary>문체위 기본 명부 (위원·피감기관장)</summary>
+          <div class="base-list"></div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2>용어 교정 <span id="fixCount" class="count"></span></h2>
+        <label class="toggle"><input id="autoName" type="checkbox" checked /> 위원·장관·청장 이름 자동 교정</label>
+        <textarea id="fixInput" class="fix-input" rows="4" spellcheck="false"
+          placeholder="틀린 말 => 바른 말 (한 줄에 하나)&#10;예: 콘텐츠 진흥원 => 한국콘텐츠진흥원"></textarea>
+        <button id="fixSave" class="btn small">교정 적용</button>
+        <p class="hint">교정된 줄 끝의 <span class="fx">교정</span>에 마우스를 올리면 AI 자막 원문이 보입니다. 교정 사전은 이 브라우저에 저장됩니다.</p>
       </section>
 
       <section class="panel">
@@ -107,6 +120,7 @@
     화자 지정은 이 브라우저에만 저장됩니다.
   </footer>
 
-  <script src="./app.js?v=7"></script>
+  <script src="./data.js?v=8"></script>
+  <script src="./app.js?v=8"></script>
 </body>
 </html>

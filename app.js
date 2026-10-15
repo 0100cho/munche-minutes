@@ -15,7 +15,8 @@ const els = {
   copySel: $('copySel'), copyMatches: $('copyMatches'), copyAll: $('copyAll'), saveTxt: $('saveTxt'),
   withTime: $('withTime'),
   rosterForm: $('rosterForm'), rosterInput: $('rosterInput'), roster: $('roster'), detected: $('detected'),
-  applyAll: $('applyAllSuggest'),
+  applyAll: $('applyAllSuggest'), baseRoster: $('baseRoster'),
+  fixInput: $('fixInput'), fixSave: $('fixSave'), autoName: $('autoName'), fixCount: $('fixCount'),
   results: $('results'), resultCount: $('resultCount'),
   pop: $('popover'), popInput: $('popInput'), popList: $('popList'), popClear: $('popClear'),
   toast: $('toast'),
@@ -29,6 +30,8 @@ const state = {
   lineEl: new Map(),  // n -> element
   assign: {},         // n -> speaker label (speaker changes from this line on)
   roster: [],
+  orgNames: {},       // 기관장 직함 -> 본문 인사말에서 알게 된 이름
+  fixRules: [], autoName: true,
   suggestions: new Map(), // n -> label
   terms: [], regex: null,
   matches: [],        // ns
@@ -199,11 +202,12 @@ function mergeSegments(list) {
   for (const raw of list) {
     if (raw == null || raw.n == null || !raw.t) continue;
     const prev = state.byN.get(raw.n);
+    const text = String(raw.t).trim();
     if (prev) {
-      if (prev.t !== raw.t) { prev.t = raw.t; const el = state.lineEl.get(raw.n); if (el) fillLine(el, prev); }
+      if (prev.raw !== text) { prev.raw = text; prev.t = correctText(text); const el = state.lineEl.get(raw.n); if (el) fillLine(el, prev); }
       continue;
     }
-    const seg = { n: raw.n, t: String(raw.t).trim(), at: raw.at };
+    const seg = { n: raw.n, raw: text, t: correctText(text), at: raw.at };
     state.byN.set(seg.n, seg);
     added.push(seg);
   }
@@ -242,24 +246,173 @@ async function poll() {
     else appendLines(added);
     refreshSearch(false);
     renderDetected();
+    updateFixCount();
     if (els.follow.checked && wasNearBottom) scrollToBottom();
     else { state.unseen += added.length; showJumpNew(); }
   } catch { /* transient; next tick retries */ } finally { polling = false; }
 }
 
 /* ---------- speakers ---------- */
-const NAME_STOP = new Set(['존경하는', '여러', '우리', '모든', '다른', '해당', '그러면', '다음은', '다음으로', '이어서', '먼저', '간사', '각', '소속', '여야', '전체', '참석', '증인', '국민의힘', '민주당']);
+const NAME_STOP = new Set(['존경하는', '여러', '우리', '모든', '다른', '해당', '그러면', '다음은', '다음으로', '이어서', '먼저', '간사', '각', '소속', '여야', '전체', '참석', '증인', '국민의힘', '민주당', '직무대리', '직무대행', '권한대행']);
 const okName = (s) => s && s.length >= 2 && s.length <= 4 && !NAME_STOP.has(s) && !/위원|회$|님$/.test(s);
 const RE_CALL = /([가-힣]{2,4})\s*(?:위원|의원)님?[,.\s]*(?:수고(?:하셨|많으셨)습니다[.,\s]*)?(?:보충\s*|추가\s*)?(?:질의|질문|말씀|발언|토론|의사진행\s*발언)(?:을|를)?\s*(?:이어\s*가|해|하여|하)?\s*(?:주시기\s*바랍니다|주십시오|주세요|주시죠|하시겠습니다|하십시오|바랍니다)/;
 // "○○○ 위원님께 의사진행발언 1분 드리겠습니다", "○○○ 위원님부터", or a bare "○○○ 위원님" line.
 const RE_GIVE = /([가-힣]{2,4})\s*위원님께\s*[^.]{0,20}?(?:발언|질의|시간|\d+\s*분)[^.]{0,10}?드리겠습니다/;
 const RE_FROM = /([가-힣]{2,4})\s*위원님부터/;
 const RE_BARE = /^\s*(?:네|예)?\s*([가-힣]{2,4})\s*위원님[.?!\s]*$/;
-const RE_NEXT = /(?:다음은|다음으로|이어서)\s*([가-힣]{2,4})\s*(?:위원|의원)님(?![^.]{0,24}순(?:입니다|으로|서))/;
+const RE_NEXT = /(?:다음은|다음으로|이어서|다음\s*순서는|다음\s*질의(?:자)?는)\s*([가-힣]{2,4})\s*(?:위원|의원)님(?![^.]{0,24}순(?:입니다|으로|서))/;
 const RE_INTRO = /([가-힣]{2,4})\s*(위원장|소위원장|간사|위원|의원|장관|차관|청장|원장|사장|이사장|회장|처장|실장|본부장)입니다/;
-const RE_ANSWER = /(장관|차관|청장|원장|사장|이사장|회장|처장|실장|본부장)님?\s*(?:께서\s*)?답변(?:해|하여|하시|을)?/;
+const RE_ANSWER = /(장관|차관|청장|이사장|위원장|사장|원장|관장|총장|회장|처장|실장|본부장)님?\s*(?:께서\s*)?답변(?:해|하여|하시|을)?/;
+
+/* ---------- 문체위 기본 명부 (data.js) ---------- */
+const MEMBERS = MUNCHE.members;
+const MEMBER_NAMES = MEMBERS.map((m) => m.name);
+const CHAIR = MEMBERS.find((m) => m.role === '위원장');
+const memberLabel = (name) => (CHAIR && name === CHAIR.name ? `위원장 ${name}` : `${name} 위원`);
+
+// 회의록식 직함: 국립국어원+원장 → 국립국어원장, 국립중앙극장+극장장 → 국립중앙극장장, 한국관광공사+사장 → 한국관광공사사장.
+const TITLE_JOIN = ['사무국', '극장', '전당', '본부', '원', '관', '청', '소', '국', '교', '회', '단'];
+function titleOf(org, head) {
+  for (const p of TITLE_JOIN) if (org.endsWith(p) && head.startsWith(p) && head.length > p.length) return org + head.slice(p.length);
+  return org + head;
+}
+const ORGS = MUNCHE.orgs.map(([org, head, name, ...aliases]) => ({ org, head, name, aliases, title: titleOf(org, head) }));
+const squash = (s) => s.replace(/\s+/g, '');
+const ORG_BY_KEY = new Map(); // 공백 없는 기관명·약칭 -> [org]
+for (const o of ORGS) {
+  for (const k of [o.org, ...o.aliases]) {
+    const key = squash(k);
+    if (!ORG_BY_KEY.has(key)) ORG_BY_KEY.set(key, []);
+    ORG_BY_KEY.get(key).push(o);
+  }
+}
+const spaced = (s) => [...s].map(reEsc).join('\\s*');
+const ORG_ALT = [...ORG_BY_KEY.keys()].sort((a, b) => b.length - a.length).map(spaced).join('|');
+const HEAD_ALT = [...new Set(ORGS.map((o) => o.head))].sort((a, b) => b.length - a.length).join('|');
+// "한국관광공사 사장 박성혁입니다", "한국콘텐츠진흥원장 김윤지입니다", "국가유산청장 허민입니다"
+const RE_ORG_INTRO = new RegExp(`(${ORG_ALT})\\s*(${HEAD_ALT}|장)\\s*([가-힣]{2,4})입니다`);
+// "사행산업통합감독위원회 최병환 위원장입니다"
+const RE_ORG_INTRO2 = new RegExp(`(${ORG_ALT})\\s*([가-힣]{2,4})\\s+(${HEAD_ALT})입니다`);
+// 이름 없이: "국가유산진흥원장입니다"
+const RE_ORG_INTRO0 = new RegExp(`(${ORG_ALT})\\s*(${HEAD_ALT}|장)입니다`);
+// 부처 간부: "김정훈 기획조정실장입니다"
+const RE_STAFF_INTRO = /^[^가-힣]*(?:예\s*)?([가-힣]{2,4})\s+([가-힣]{2,10}(?:실장|국장|단장|본부장|정책관|기획관|대변인|차관|차장))입니다/;
+const RE_ORG_ANY =new RegExp(`(${ORG_ALT})`, 'g');
+// "전주시갑 김윤덕입니다", "대구 북구을의 김승수입니다", "김승수 위원입니다"
+const RE_MEMBER_INTRO = new RegExp(`(?:^|[\\s의])(${MEMBER_NAMES.join('|')})(?:\\s*위원)?입니다`);
+
+function officialLabel(o) {
+  const name = state.orgNames[o.title] || o.name;
+  return name ? `${o.title} ${name}` : o.title;
+}
+// 인사말에서 들은 기관장 이름을 기억한다 (기본 명부에 이름이 있고 비슷하면 그쪽을 쓴다).
+function learnOfficial(o, heard, lastByHead) {
+  const known = o.name && closestName(heard, [o.name]);
+  if (!known && state.orgNames[o.title] !== heard) { state.orgNames[o.title] = heard; store('munche.orgNames', state.orgNames); }
+  const label = officialLabel(o);
+  lastByHead[o.head] = label;
+  return label;
+}
+function findOrg(key, head) {
+  const list = ORG_BY_KEY.get(squash(key)) || [];
+  return list.find((o) => o.head === head) || (head === '장' || !head ? list[0] : null) || null;
+}
+
+// 답변 요청 직전 말에서 기관을 찾는다: "관광공사 사장님 답변해 주십시오"
+function answererLabel(before, head, lastByHead) {
+  const mentions = [...before.slice(-40).matchAll(RE_ORG_ANY)];
+  for (let k = mentions.length - 1; k >= 0; k--) {
+    const o = findOrg(mentions[k][1], head);
+    if (o && o.head === head) return officialLabel(o);
+  }
+  if (head === '장관' || head === '청장') {
+    const o = ORGS.find((x) => x.head === head);
+    return officialLabel(o);
+  }
+  if (lastByHead[head]) return lastByHead[head];
+  return head === '위원장' ? null : head;
+}
+
+/* ---------- 이름·용어 교정 ---------- */
+// 한글 자모 단위 편집거리로 "윤영근 위원" → "윤용근 위원", "최희영 장관" → "최휘영 장관"처럼 고친다.
+function jamo(s) {
+  const out = [];
+  for (const ch of s) {
+    const c = ch.charCodeAt(0) - 0xac00;
+    if (c < 0 || c > 11171) { out.push(ch); continue; }
+    out.push(`c${Math.floor(c / 588)}`, `v${Math.floor((c % 588) / 28)}`);
+    if (c % 28) out.push(`t${c % 28}`);
+  }
+  return out;
+}
+function editDist(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+const jamoCache = new Map();
+const jamoOf = (s) => { if (!jamoCache.has(s)) jamoCache.set(s, jamo(s)); return jamoCache.get(s); };
+function closestName(tok, names) {
+  if (names.includes(tok)) return tok;
+  let best = null; let bd = Infinity; let tie = false;
+  const ja = jamo(tok);
+  for (const n of names) {
+    const d = editDist(ja, jamoOf(n));
+    if (d < bd) { bd = d; best = n; tie = false; } else if (d === bd) tie = true;
+  }
+  const limit = best && best.length >= 3 ? 2 : 1;
+  return best && !tie && bd <= limit ? best : null;
+}
+const NAME_POOL = {
+  장관: ORGS.filter((o) => o.head === '장관' && o.name).map((o) => o.name),
+  청장: ORGS.filter((o) => o.head === '청장' && o.name).map((o) => o.name),
+};
+const RE_NAME_FIX = /(?<![가-힣])([가-힣]{2,4}?)(\s*)(위원장|위원|의원|간사|장관|청장)/g;
+
+function buildFixRules(text) {
+  const rules = [];
+  const add = (from, to) => { from = from.trim(); to = to.trim(); if (from && from !== to) rules.push([new RegExp(spaced(squash(from)), 'g'), to, squash(from)]); };
+  for (const [from, to] of MUNCHE.fixes) add(from, to);
+  for (const line of text.split('\n')) {
+    const parts = line.split(/=>|→|->/);
+    if (parts.length === 2) add(parts[0], parts[1]);
+  }
+  return rules;
+}
+
+function correctText(raw) {
+  let s = raw;
+  for (const [re, to, from] of state.fixRules) {
+    // "관광공사 => 한국관광공사"가 이미 맞게 적힌 "한국관광공사"를 또 바꾸지 않도록.
+    const at = to.indexOf(from);
+    s = s.replace(re, (hit, off, str) => (at >= 0 && squash(str.slice(Math.max(0, off - at - 2), off + hit.length + to.length)).includes(squash(to)) ? hit : to));
+  }
+  if (state.autoName) {
+    s = s.replace(RE_NAME_FIX, (all, tok, sp, suf) => {
+      if (NAME_STOP.has(tok)) return all;
+      const name = closestName(tok, NAME_POOL[suf] || MEMBER_NAMES);
+      return name && name !== tok ? name + sp + suf : all;
+    });
+  }
+  return s;
+}
+
+function recorrectAll() {
+  for (const seg of state.segs) seg.t = correctText(seg.raw);
+  renderAll(true);
+  updateFixCount();
+}
+function updateFixCount() {
+  const n = state.segs.reduce((k, s) => k + (s.t !== s.raw), 0);
+  els.fixCount.textContent = n ? `${n}줄 교정됨` : '';
+}
 
 function chairLabel() {
+  if (CHAIR) return memberLabel(CHAIR.name);
   return state.roster.find((r) => /^위원장/.test(r) || / 위원장$/.test(r)) || '위원장';
 }
 
@@ -273,23 +426,44 @@ function computeSuggestions() {
     if (eff[i] === label) return;
     sug.set(s.n, label);
   };
+  const lastByHead = {}; // 이 회의에서 마지막으로 인사한 기관장 (직함별)
   for (let i = 0; i < segs.length; i++) {
     const t = segs[i].t;
-    let m = t.match(RE_INTRO);
+    let m = t.match(RE_ORG_INTRO);
+    if (m && m.index < 80 && okName(m[3]) && !HEAD_ALT.split('|').includes(m[3])) {
+      const o = findOrg(m[1], m[2]);
+      if (o) { put(i, learnOfficial(o, m[3], lastByHead)); continue; }
+    }
+    m = t.match(RE_ORG_INTRO2);
+    if (m && m.index < 80 && okName(m[2])) {
+      const o = findOrg(m[1], m[3]);
+      if (o) { put(i, learnOfficial(o, m[2], lastByHead)); continue; }
+    }
+    m = t.match(RE_ORG_INTRO0);
+    if (m && m.index < 30) {
+      const o = findOrg(m[1], m[2]);
+      if (o) { const label = officialLabel(o); lastByHead[o.head] = label; put(i, label); continue; }
+    }
+    m = t.match(RE_STAFF_INTRO);
+    if (m && okName(m[1]) && !MEMBER_NAMES.includes(m[1])) { put(i, `${m[2]} ${m[1]}`); continue; }
+    m = t.slice(0, 40).match(RE_MEMBER_INTRO);
+    if (m) { put(i, memberLabel(m[1])); continue; }
+    m = t.match(RE_INTRO);
     if (m && m.index < 30 && okName(m[1])) {
       const role = m[2] === '의원' ? '위원' : m[2];
-      put(i, `${m[1]} ${role}`);
+      put(i, role === '위원' || role === '간사' ? memberLabel(m[1]) : `${m[1]} ${role}`);
       continue;
     }
     m = t.match(RE_CALL) || t.match(RE_NEXT) || t.match(RE_GIVE) || t.match(RE_FROM) || t.match(RE_BARE);
     if (m && okName(m[1])) {
       put(i, chairLabel());
-      put(i + 1, `${m[1]} 위원`);
+      put(i + 1, memberLabel(m[1]));
       continue;
     }
     m = t.match(RE_ANSWER);
     if (m) {
-      put(i + 1, m[1]);
+      const label = answererLabel(t.slice(0, m.index), m[1], lastByHead);
+      if (label) put(i + 1, label);
     }
   }
   state.suggestions = sug;
@@ -366,6 +540,28 @@ function renderRoster() {
   });
 }
 
+// 기본 명부: 위원 16명과 피감기관장. 클릭하면 선택한 줄부터 화자로 지정.
+function renderBaseRoster() {
+  const box = els.baseRoster.querySelector('.base-list');
+  box.innerHTML = '';
+  const group = (title, labels) => {
+    const h = document.createElement('div');
+    h.className = 'lbl'; h.textContent = title;
+    box.append(h);
+    for (const l of labels) {
+      const b = document.createElement('button');
+      b.className = 'chip'; b.textContent = l;
+      b.onclick = () => {
+        if (state.active == null) return toast('먼저 본문에서 줄을 클릭해 주세요.');
+        setSpeaker(state.active, l);
+      };
+      box.append(b);
+    }
+  };
+  group(`위원 ${MEMBERS.length}명`, MEMBERS.map((m) => memberLabel(m.name)));
+  group(`피감기관 ${new Set(ORGS.map((o) => o.org)).size}곳`, ORGS.map(officialLabel));
+}
+
 function renderDetected() {
   const labels = [...new Set(state.suggestions.values())].filter((l) => !state.roster.includes(l));
   els.detected.innerHTML = labels.length ? '<span class="lbl">본문에서 감지된 화자 (클릭해 명부에 추가)</span>' : '';
@@ -397,7 +593,8 @@ const isMatch = (seg) => !!state.regex && seg.t.search(state.regex) !== -1;
 function fillLine(el, seg) {
   const sug = state.suggestions.get(seg.n);
   el.querySelector('.x').innerHTML =
-    (sug ? `<span class="sug" data-sug="${esc(sug)}" title="클릭하면 이 줄부터 화자로 지정">제안 · ${esc(sug)} ✓</span>` : '') + highlight(seg.t);
+    (sug ? `<span class="sug" data-sug="${esc(sug)}" title="클릭하면 이 줄부터 화자로 지정">제안 · ${esc(sug)} ✓</span>` : '') + highlight(seg.t) +
+    (seg.t !== seg.raw ? `<span class="fx" title="AI 자막 원문: ${esc(seg.raw)}">교정</span>` : '');
 }
 
 function makeLine(seg) {
@@ -459,6 +656,7 @@ function renderAll(keepScroll) {
   else if (state.segs.length) setStatus('');
   refreshSearch(false);
   renderDetected();
+  updateFixCount();
   if (keepScroll) window.scrollTo(0, y);
 }
 
@@ -628,7 +826,10 @@ els.transcript.addEventListener('click', (e) => {
 let popN = null; let popHl = 0; let popPicked = false;
 function popOptions() {
   const q = els.popInput.value.replace(/\s+/g, '');
-  const pool = [...new Set([...state.roster, ...state.suggestions.values(), ...Object.values(state.assign)])];
+  const pool = [...new Set([
+    ...state.roster, ...state.suggestions.values(), ...Object.values(state.assign), ...MEMBERS.map((m) => memberLabel(m.name)),
+    ...(q ? ORGS.map(officialLabel) : []),
+  ])];
   return pool.filter((l) => !q || l.replace(/\s+/g, '').includes(q));
 }
 function renderPopList() {
@@ -1028,11 +1229,28 @@ els.sumHead.addEventListener('pointerdown', (e) => {
 /* ---------- misc wiring ---------- */
 els.select.onchange = () => selectMeeting(els.select.value);
 els.applyAll.onclick = applyAllSuggestions;
+els.fixSave.onclick = () => {
+  store('munche.fix', els.fixInput.value);
+  state.fixRules = buildFixRules(els.fixInput.value);
+  recorrectAll();
+  toast(`교정 사전 적용 (${state.fixRules.length - MUNCHE.fixes.length}개 항목)`);
+};
+els.autoName.onchange = () => {
+  state.autoName = els.autoName.checked;
+  store('munche.autoName', state.autoName);
+  recorrectAll();
+};
+els.baseRoster.addEventListener('toggle', () => { if (els.baseRoster.open) renderBaseRoster(); });
 els.rosterForm.onsubmit = (e) => { e.preventDefault(); addToRoster(els.rosterInput.value); els.rosterInput.value = ''; };
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.pollTimer) poll(); });
 
 /* ---------- boot ---------- */
 state.roster = load('munche.roster', []);
+state.orgNames = load('munche.orgNames', {});
+state.autoName = load('munche.autoName', true);
+els.autoName.checked = state.autoName;
+els.fixInput.value = load('munche.fix', '');
+state.fixRules = buildFixRules(els.fixInput.value);
 renderRoster();
 const savedQuery = load('munche.query', '');
 if (savedQuery) { els.search.value = savedQuery; buildRegex(savedQuery); }
